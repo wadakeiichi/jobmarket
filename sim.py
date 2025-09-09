@@ -49,6 +49,8 @@ def simulate(
     backfill_if_short: bool = True,  # 女性限定で人数不足の際に男女混合で穴埋めするか
     feedback_strength: float = 0.0,  # 応募者の性別比を現職構成にブレンド（0=no feedback, 1=mirror staff）
     max_candidate_years: int = 10,   # 候補者として残れる最大年数（デフォルト10年）
+    applicants_multiplier: float = 1.0,  # 応募倍率：毎年の新規応募者数 = round(r * k)
+    stop_female_priority_at: float = 50.0,  # 在職女性比がこの%に達したら female_priority を停止
 ) -> Dict[str, List[YearStats]]:
     """
     Returns:
@@ -92,12 +94,19 @@ def simulate(
         y_eff = (1.0 - feedback_strength) * y + feedback_strength * (100.0 * male_share_staff)
         y_eff = float(np.clip(y_eff, 0.0, 100.0))
 
-        n_male_cand = int(round(r * y_eff / 100.0))
-        n_fem_cand  = r - n_male_cand
+        # female priority の停止条件（在職女性比が閾値以上なら equal priority に切替）
+        female_share_staff_prev = (prev.n_female / denom) * 100.0 if denom > 0 else 50.0
+        use_female_priority = (
+            (mode == "female_priority") and (female_share_staff_prev < stop_female_priority_at)
+        )
+
+        n_new = int(round(max(0.0, applicants_multiplier) * r))
+        n_male_cand = int(round(n_new * y_eff / 100.0))
+        n_fem_cand  = n_new - n_male_cand
         new_genders = np.array([True]*n_male_cand + [False]*n_fem_cand, dtype=bool)
         rng.shuffle(new_genders)
-        new_skills  = _draw_skills(r, mu, sigma, rng)
-        new_ages    = np.zeros(r, dtype=int)
+        new_skills  = _draw_skills(n_new, mu, sigma, rng)
+        new_ages    = np.zeros(n_new, dtype=int)
 
         # Age existing pool, drop those exceeding max_candidate_years-1 after increment
         if pool_ages.size:
@@ -116,7 +125,7 @@ def simulate(
         cand_female_share = 100.0 - y_eff if r > 0 else float("nan")
 
         # --- 3) 採用（モード別）
-        if mode == "equal_priority":
+        if not use_female_priority:  # equal priority
             # 性別無関係（equal priority）に能力上位 r 名（候補者プール全体から）
             if pool_skills.size > 0:
                 order = np.argsort(-pool_skills)[:min(r, pool_skills.size)]
@@ -125,7 +134,7 @@ def simulate(
             hire_g = pool_genders[order]
             hire_s = pool_skills[order]
 
-        elif mode == "female_priority":
+        elif use_female_priority:
             # まず女性のみで上位を選抜（候補者プール全体から）
             female_idx = np.where(~pool_genders)[0]
             if female_idx.size >= r:
@@ -174,7 +183,7 @@ def simulate(
         if pool_skills.size > 0 and hire_g.size > 0:
             keep_mask = np.ones(pool_skills.size, dtype=bool)
             # Identify indices used in pool (order or chosen). Recompute indices relative to pool
-            if mode == "equal_priority":
+            if not use_female_priority:
                 idx_hired = order
             else:
                 # mode == female_priority
@@ -244,6 +253,15 @@ def plot_results(results: List[Dict[str, List[YearStats]]], labels: List[str], t
     arrays = [_stats_to_arrays(r["stats"]) for r in results]
     years = arrays[0]["year"]
 
+    # Consistent colors per label across all panels
+    cmap = None
+    try:
+        import matplotlib.pyplot as plt  # already imported above, but safe
+        cmap = plt.get_cmap('tab10')
+    except Exception:
+        cmap = None
+    colors = {lab: (cmap(i) if cmap else None) for i, lab in enumerate(labels)}
+
     fig, axes = plt.subplots(2, 2, figsize=(11, 7), constrained_layout=True)
     if title:
         fig.suptitle(title)
@@ -251,9 +269,10 @@ def plot_results(results: List[Dict[str, List[YearStats]]], labels: List[str], t
     # (1) Female share (staff vs applicants)
     ax = axes[0, 0]
     for arr, lab in zip(arrays, labels):
+        col = colors.get(lab)
         share_f_staff = arr["n_f"] / (arr["n_f"] + arr["n_m"]) * 100.0
-        ax.plot(years, share_f_staff, label=f"{lab} staff")
-        ax.plot(years, arr["cand_female_share"], linestyle=":", alpha=0.9, label=f"{lab} applicants")
+        ax.plot(years, share_f_staff, label=f"{lab} staff", color=col)
+        ax.plot(years, arr["cand_female_share"], linestyle=":", alpha=0.9, label=f"{lab} applicants", color=col)
     ax.set_title("Female share (%)")
     ax.set_xlabel("Year")
     ax.set_ylabel("Female (%)")
@@ -263,8 +282,9 @@ def plot_results(results: List[Dict[str, List[YearStats]]], labels: List[str], t
     # (2) Headcount by gender
     ax = axes[0, 1]
     for arr, lab in zip(arrays, labels):
-        ax.plot(years, arr["n_m"], linestyle="-", alpha=0.9, label=f"M ({lab})")
-        ax.plot(years, arr["n_f"], linestyle="--", alpha=0.9, label=f"F ({lab})")
+        col = colors.get(lab)
+        ax.plot(years, arr["n_m"], linestyle="-", alpha=0.9, label=f"M ({lab})", color=col)
+        ax.plot(years, arr["n_f"], linestyle="--", alpha=0.9, label=f"F ({lab})", color=col)
     ax.set_title("Headcount by gender")
     ax.set_xlabel("Year")
     ax.set_ylabel("Count")
@@ -274,7 +294,8 @@ def plot_results(results: List[Dict[str, List[YearStats]]], labels: List[str], t
     # (3) Mean ability (overall)
     ax = axes[1, 0]
     for arr, lab in zip(arrays, labels):
-        ax.plot(years, arr["mu_all"], label=lab)
+        col = colors.get(lab)
+        ax.plot(years, arr["mu_all"], label=lab, color=col)
     ax.set_title("Mean ability (overall)")
     ax.set_xlabel("Year")
     ax.set_ylabel("Mean score")
@@ -284,8 +305,9 @@ def plot_results(results: List[Dict[str, List[YearStats]]], labels: List[str], t
     # (4) Mean ability (by gender)
     ax = axes[1, 1]
     for arr, lab in zip(arrays, labels):
-        ax.plot(years, arr["mu_m"], linestyle="-", label=f"M ({lab})")
-        ax.plot(years, arr["mu_f"], linestyle="--", label=f"F ({lab})")
+        col = colors.get(lab)
+        ax.plot(years, arr["mu_m"], linestyle="-", label=f"M ({lab})", color=col)
+        ax.plot(years, arr["mu_f"], linestyle="--", label=f"F ({lab})", color=col)
     ax.set_title("Mean ability (by gender)")
     ax.set_xlabel("Year")
     ax.set_ylabel("Mean score")
@@ -317,20 +339,28 @@ if __name__ == "__main__":
                         help="Blend applicants' male share toward current staff (0=no feedback, 1=mirror staff)")
     parser.add_argument("--max-candidate-years", type=int, default=10,
                         help="Maximum years an applicant can remain in the pool (default 10)")
+    parser.add_argument("--applicants-multiplier", type=float, default=1.0,
+                        help="Applicants per year = round(r * k). k>1 increases selectivity (default 1.0)")
+    parser.add_argument("--stop-female-priority-at", type=float, default=50.0,
+                        help="Stop using female-priority once staff female share reaches this % (default 50.0)")
     args = parser.parse_args()
 
     # (A) Equal-priority
     res_equal = simulate(
         args.T, args.P0, args.x, args.y, args.r, args.mu, args.sigma, args.seed,
         mode="equal_priority", feedback_strength=args.feedback_strength,
-        max_candidate_years=args.max_candidate_years
+        max_candidate_years=args.max_candidate_years,
+        applicants_multiplier=args.applicants_multiplier,
+        stop_female_priority_at=args.stop_female_priority_at
     )
     # (B) Female-priority
     res_fonly = simulate(
         args.T, args.P0, args.x, args.y, args.r, args.mu, args.sigma, args.seed,
         mode="female_priority", backfill_if_short=not args.no_backfill,
         feedback_strength=args.feedback_strength,
-        max_candidate_years=args.max_candidate_years
+        max_candidate_years=args.max_candidate_years,
+        applicants_multiplier=args.applicants_multiplier,
+        stop_female_priority_at=args.stop_female_priority_at
     )
 
     # Quick summary (start and end)

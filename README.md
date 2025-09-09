@@ -58,6 +58,8 @@ python sim.py \
 - `--feedback-strength`（float, 0〜1, 既定 0.0）: 応募者の男性割合を在職者の男性割合へブレンド。
   - `y_eff = (1-phi)*y + phi*(100*staff_male_share)`
 - `--max-candidate-years`（int, 既定 10）: 採用されない応募者が候補者プールに在籍できる最大年限。
+- `--applicants-multiplier`（float, 既定 1.0）: 応募倍率 k。毎年の新規応募者数を `round(r * k)` とする（k>1 で選抜が強まり、平均能力が上がりやすくなる）。
+- `--stop-female-priority-at`（float, 既定 50.0）: 在職女性比がこの%に達したら、以後は female-priority を停止し equal-priority に切替。
 - `--no-backfill`（フラグ, 既定 False）: Female-priority で女性が `r` に満たない場合に穴埋めしない。
 - `--save`（パス, 任意）: 図を保存（省略時は画面表示）。
 
